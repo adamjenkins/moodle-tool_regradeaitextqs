@@ -1,0 +1,149 @@
+name: Moodle Plugin CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Per MOODLE_502_STABLE's version block in public/admin/environment.xml, the minimum
+        # PostgreSQL is 16. Re-verify against environment.xml before bumping this down.
+        # MOODLE_503_STABLE (5.3) needs PostgreSQL 17 (environment.xml 5.3 block), set per row via matrix.pgsql-image.
+        image: ${{ matrix.pgsql-image || 'postgres:16' }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+      mariadb:
+        # MOODLE_502_STABLE minimum MariaDB is 10.11; MOODLE_503_STABLE (5.3) needs MariaDB 11.4
+        # (environment.xml 5.3 block), set per row via matrix.mariadb-image.
+        image: ${{ matrix.mariadb-image || 'mariadb:10.11' }}
+        env:
+          MYSQL_USER: root
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'true'
+          MYSQL_CHARACTER_SET_SERVER: utf8mb4
+          MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 3
+
+    strategy:
+      fail-fast: false
+      # CI covers MOODLE_502_STABLE on its newest PHP, plus blocking MOODLE_503_STABLE
+      # (5.3) rows at its PHP floor and ceiling (8.3-8.4, environment.xml 5.3 block).
+      matrix:
+        php: ['8.4']
+        moodle-branch: ['MOODLE_502_STABLE']
+        database: ['pgsql', 'mariadb']
+        include:
+          - php: '8.4'
+            moodle-branch: 'MOODLE_503_STABLE'
+            database: 'pgsql'
+            pgsql-image: 'postgres:17'
+            mariadb-image: 'mariadb:11.4'
+          - php: '8.3'
+            moodle-branch: 'MOODLE_503_STABLE'
+            database: 'mariadb'
+            pgsql-image: 'postgres:17'
+            mariadb-image: 'mariadb:11.4'
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+        with:
+          path: plugin
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.20'
+
+      - name: Cache composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/composer/files
+          key: composer-${{ runner.os }}-php${{ matrix.php }}-moodle-plugin-ci-v4
+          restore-keys: |
+            composer-${{ runner.os }}-php${{ matrix.php }}-
+            composer-${{ runner.os }}-
+
+      - name: Initialise moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo $(cd ci && pwd)/bin >> $GITHUB_PATH
+          echo "$(cd ci && pwd)/vendor/bin" >> $GITHUB_PATH
+          sudo locale-gen en_AU.UTF-8
+          echo "NVM_DIR=$HOME/.nvm" >> $GITHUB_ENV
+
+      - name: Add qtype_aitext and its behaviours
+        # Needs qtype_aitext 2026101400 (fixed feedback parser). Until that is merged upstream, use the
+        # fork branch that carries it; switch to marcusgreen/moodle-qtype_aitext once released there.
+        run: |
+          moodle-plugin-ci add-plugin --branch fix/malformed-default-jsonprompt adamjenkins/moodle-qtype_aitext
+          moodle-plugin-ci add-plugin marcusgreen/moodle-qbehaviour_immediate_for_aitext
+          moodle-plugin-ci add-plugin marcusgreen/moodle-qbehaviour_deferred_for_aitext
+
+      - name: Install Moodle
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+        env:
+          DB: ${{ matrix.database }}
+          MOODLE_BRANCH: ${{ matrix.moodle-branch }}
+
+      - name: PHP Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phplint
+
+      - name: PHP Copy/Paste Detector
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpcpd
+        continue-on-error: true
+
+      - name: PHP Mess Detector
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpmd
+        continue-on-error: true
+
+      - name: Moodle Code Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci codechecker
+
+      - name: Moodle PHPDoc Checker
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpdoc
+        continue-on-error: true
+
+      - name: Validating
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci validate
+
+      - name: Check upgrade savepoints
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci savepoints
+
+      - name: Mustache Lint
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci mustache
+
+      - name: PHPUnit tests
+        if: ${{ !cancelled() }}
+        run: moodle-plugin-ci phpunit

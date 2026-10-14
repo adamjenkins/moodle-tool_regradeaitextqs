@@ -1,0 +1,26 @@
+{
+    "name": "adamjenkins/moodle-tool_regradeaitextqs",
+    "description": "A Moodle admin tool that regrades AI Text questions left in Requires grading in finished quiz attempts",
+    "type": "moodle-tool",
+    "keywords": ["moodle", "admin tool", "quiz", "ai", "aitext", "regrade"],
+    "homepage": "https://github.com/adamjenkins/moodle-tool_regradeaitextqs",
+    "license": "GPL-3.0-or-later",
+    "authors": [
+        {
+            "name": "Adam Jenkins",
+            "email": "adam@wisecat.net"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/adamjenkins/moodle-tool_regradeaitextqs/issues",
+        "source": "https://github.com/adamjenkins/moodle-tool_regradeaitextqs"
+    },
+    "require": {
+        "moodle/moodle": "^4.5",
+        "moodle/composer-installer": "*"
+    },
+    "require-dev": {
+        "squizlabs/php_codesniffer": "*",
+        "moodlehq/moodle-cs": "*"
+    }
+}
