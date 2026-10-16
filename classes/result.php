@@ -28,12 +28,16 @@ class result {
     const REREAD = 'reread';
     /** @var string The AI must be asked again. */
     const ASKAI = 'askai';
-    /** @var string No AI result exists and none can be made (answer incomplete): a teacher must grade it. */
+    /** @var string The answer never reached the AI (empty or outside the word limits): it gets a mark of zero. */
+    const INVALID = 'invalid';
+    /** @var string Nothing is done for this question in this run (its action is set to leave it): a teacher must grade it. */
     const TEACHER = 'teacher';
     /** @var string Regrading was tried and gave no mark, or could not run. */
     const FAILED = 'failed';
     /** @var string The question was graded by the tool. */
     const GRADED = 'graded';
+    /** @var string[] The assessments the tool can act on; each has a default-action setting. */
+    const ACTIONS = [self::REREAD, self::ASKAI, self::INVALID];
 
     /** @var string one of the class constants. */
     public readonly string $category;

@@ -27,6 +27,7 @@ define('CLI_SCRIPT', true);
 require(__DIR__ . '/../../../../config.php');
 require_once($CFG->libdir . '/clilib.php');
 
+use tool_regradeaitextqs\defaults;
 use tool_regradeaitextqs\finder;
 use tool_regradeaitextqs\regrader;
 use tool_regradeaitextqs\result;
@@ -42,13 +43,15 @@ if ($unrecognised) {
 $help = "List or regrade AI Text questions left in \"Requires grading\" in finished quiz attempts.
 
 Without --execute nothing is changed: each stuck question is listed with what would happen.
+What happens to each kind of stuck question follows the plugin's default-action settings.
 
 Options:
   --course=ID   Only quizzes in this course.
   --quiz=ID     Only this quiz (quiz instance id).
   --all         Every quiz on the site.
-  --execute     Regrade: re-read stored AI replies, and ask the AI again where they give no mark.
-  --no-ai       With --execute, only re-read stored replies; never call the AI.
+  --execute     Regrade: re-read stored AI replies, ask the AI again where they give no mark,
+                and give answers that never reached the AI a mark of zero.
+  --no-ai       Never call the AI (questions that need it are left as they are).
   -h, --help    Print this help.
 
 Example:
@@ -71,6 +74,10 @@ if (!$items) {
     exit(0);
 }
 
+$actions = defaults::actions();
+if ($options['no-ai']) {
+    $actions = array_values(array_diff($actions, [result::ASKAI]));
+}
 $regrader = new regrader();
 $counts = [];
 $attempts = [];
@@ -80,13 +87,13 @@ foreach ($items as $qaid => $item) {
     }
     $attemptobj = $attempts[$item->quizattemptid];
     if ($options['execute']) {
-        $outcome = $regrader->regrade($attemptobj, (int) $item->slot, !$options['no-ai']);
+        $outcome = $regrader->regrade($attemptobj, (int) $item->slot, $actions);
         // A graded question changes the attempt; reload it before grading the next slot.
         if ($outcome->category === result::GRADED) {
             $attempts[$item->quizattemptid] = \mod_quiz\quiz_attempt::create($item->quizattemptid);
         }
     } else {
-        $outcome = $regrader->assess($attemptobj->get_question_attempt($item->slot));
+        $outcome = $regrader->plan($attemptobj->get_question_attempt($item->slot), $actions);
     }
     $counts[$outcome->category] = ($counts[$outcome->category] ?? 0) + 1;
     $mark = $outcome->mark === null ? '' : ' mark=' . format_float($outcome->mark, 2);

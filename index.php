@@ -26,6 +26,7 @@ require_once(__DIR__ . '/../../../config.php');
 require_once($CFG->libdir . '/adminlib.php');
 require_once($CFG->dirroot . '/user/lib.php');
 
+use tool_regradeaitextqs\defaults;
 use tool_regradeaitextqs\finder;
 use tool_regradeaitextqs\regrader;
 use tool_regradeaitextqs\result;
@@ -43,6 +44,12 @@ if (!$quizid) {
     echo $OUTPUT->header();
     echo $OUTPUT->heading(get_string('pluginname', 'tool_regradeaitextqs'));
     echo html_writer::tag('p', get_string('intro', 'tool_regradeaitextqs'));
+    if (has_capability('moodle/site:config', context_system::instance())) {
+        echo html_writer::tag('p', html_writer::link(
+            new moodle_url('/admin/settings.php', ['section' => 'tool_regradeaitextqs_settings']),
+            get_string('defaultactions', 'tool_regradeaitextqs')
+        ));
+    }
     $quizzes = $finder->summarise();
     if (!$quizzes) {
         echo $OUTPUT->notification(get_string('nonestuck', 'tool_regradeaitextqs'), 'info');
@@ -98,10 +105,12 @@ if (optional_param('regrade', false, PARAM_RAW) !== false) {
     $skipped = 0;
     foreach ($selected as $qaid => $item) {
         $category = $assessments[$qaid]->category;
-        if ($category === result::REREAD) {
-            $outcome = $regrader->regrade($attempts[$item->quizattemptid], (int) $item->slot, false);
+        if ($category === result::REREAD || $category === result::INVALID) {
+            $outcome = $regrader->regrade($attempts[$item->quizattemptid], (int) $item->slot, [$category]);
             if ($outcome->category === result::GRADED) {
                 $graded++;
+                // A graded question changes the attempt; reload it before grading the next slot.
+                $attempts[$item->quizattemptid] = \mod_quiz\quiz_attempt::create($item->quizattemptid);
             } else {
                 $skipped++;
             }
@@ -140,6 +149,7 @@ if (!$items) {
     exit;
 }
 
+$defaultactions = defaults::actions();
 $users = user_get_users_by_id(array_unique(array_column($items, 'userid')));
 $table = new html_table();
 $table->head = [
@@ -152,16 +162,16 @@ $table->head = [
 ];
 foreach ($items as $qaid => $item) {
     $assessment = $assessments[$qaid];
-    $actionable = in_array($assessment->category, [result::REREAD, result::ASKAI], true);
+    $actionable = in_array($assessment->category, result::ACTIONS, true);
     $checkbox = $actionable ? html_writer::checkbox(
         'qaids[]',
         $qaid,
-        true,
+        in_array($assessment->category, $defaultactions, true),
         '',
         ['aria-label' => get_string('selectrow', 'tool_regradeaitextqs')]
     ) : '';
     $qa = $attempts[$item->quizattemptid]->get_question_attempt($item->slot);
-    $mark = $assessment->category === result::REREAD
+    $mark = $assessment->mark !== null
         ? format_float($assessment->mark, 2) . ' / ' . format_float($qa->get_max_mark(), 2) : '';
     $review = new moodle_url('/mod/quiz/review.php', ['attempt' => $item->quizattemptid, 'slot' => $item->slot]);
     $table->data[] = [

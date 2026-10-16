@@ -54,7 +54,7 @@ class regrader {
      * Decide what can be done for a stuck question attempt, without calling the AI.
      *
      * @param question_attempt $qa the stuck question attempt.
-     * @return result REREAD (with mark and feedback), ASKAI, TEACHER or FAILED.
+     * @return result REREAD (with mark and feedback), ASKAI, INVALID (with mark zero and feedback) or FAILED.
      */
     public function assess(question_attempt $qa): result {
         $question = $qa->get_question();
@@ -76,9 +76,15 @@ class regrader {
             }
         }
 
-        // Answers that never reached the AI (under the word minimum, or empty) stay with the teacher.
-        if (!$question->is_complete_response($qa->get_last_qt_data())) {
-            return new result(result::TEACHER, reason: get_string('reason_incomplete', 'tool_regradeaitextqs'));
+        // Answers that never reached the AI (empty, or outside the word limits) get zero. qtype_aitext counts an
+        // empty answer as complete, so it is checked here.
+        if ($this->is_empty_answer($qa) || !$question->is_complete_response($qa->get_last_qt_data())) {
+            return new result(
+                result::INVALID,
+                0.0,
+                defaults::invalid_feedback(),
+                get_string('reason_incomplete', 'tool_regradeaitextqs')
+            );
         }
 
         $reason = $comment === null ? 'reason_askai_noreply' : 'reason_askai_nomarks';
@@ -86,25 +92,40 @@ class regrader {
     }
 
     /**
-     * Regrade one stuck question: re-read the stored reply, or ask the AI again, then record the grade.
+     * Decide what will be done for a stuck question attempt when only some actions are allowed.
+     *
+     * @param question_attempt $qa the stuck question attempt.
+     * @param string[] $actions the assessments that may be acted on (see result::ACTIONS).
+     * @return result the assessment, or TEACHER (with its reason) when its action is not allowed.
+     */
+    public function plan(question_attempt $qa, array $actions): result {
+        $assessment = $this->assess($qa);
+        if (in_array($assessment->category, result::ACTIONS, true) && !in_array($assessment->category, $actions, true)) {
+            return new result(result::TEACHER, reason: $assessment->reason);
+        }
+        return $assessment;
+    }
+
+    /**
+     * Regrade one stuck question: re-read the stored reply, ask the AI again, or give an invalid answer zero.
      *
      * @param quiz_attempt $attemptobj the finished quiz attempt.
      * @param int $slot the slot of the stuck question.
-     * @param bool $useai whether the AI may be asked again when the stored reply gives no mark.
-     * @return result GRADED (with mark and feedback), ASKAI (when $useai is false), TEACHER or FAILED.
+     * @param string[] $actions the assessments that may be acted on (see result::ACTIONS); ASKAI calls the AI.
+     * @return result GRADED (with mark and feedback), TEACHER (action not allowed) or FAILED.
      */
-    public function regrade(quiz_attempt $attemptobj, int $slot, bool $useai): result {
+    public function regrade(quiz_attempt $attemptobj, int $slot, array $actions): result {
         $qa = $attemptobj->get_question_attempt($slot);
         if ((string) $qa->get_state() !== (string) \question_state::$needsgrading) {
             return new result(result::FAILED, reason: get_string('reason_notstuck', 'tool_regradeaitextqs'));
         }
 
-        $assessment = $this->assess($qa);
-        if ($assessment->category === result::REREAD) {
+        $assessment = $this->plan($qa, $actions);
+        if (in_array($assessment->category, [result::REREAD, result::INVALID], true)) {
             $this->record_grade($attemptobj, $slot, $assessment->mark, $assessment->feedback);
             return new result(result::GRADED, $assessment->mark, $assessment->feedback, $assessment->reason);
         }
-        if ($assessment->category !== result::ASKAI || !$useai) {
+        if ($assessment->category !== result::ASKAI) {
             return $assessment;
         }
 
@@ -206,6 +227,17 @@ class regrader {
             }
         }
         return null;
+    }
+
+    /**
+     * Whether the student's last answer has no text (no answer, or only tags, spaces and non-breaking spaces).
+     *
+     * @param question_attempt $qa the question attempt.
+     * @return bool
+     */
+    protected function is_empty_answer(question_attempt $qa): bool {
+        $text = html_entity_decode(strip_tags((string) $qa->get_last_qt_var('answer', '')), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        return preg_replace('/[\s\x{00A0}]+/u', '', $text) === '';
     }
 
     /**

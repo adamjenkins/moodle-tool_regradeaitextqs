@@ -20,10 +20,11 @@ use tool_regradeaitextqs\regrader;
 use tool_regradeaitextqs\result;
 
 /**
- * Ask the AI again for stuck questions queued from the admin page (each call can take seconds).
+ * Ask the AI again for stuck questions queued from the admin page or the scheduled task (each call can take seconds).
  *
- * Custom data: questionattemptids (int[]). The task runs as the admin who queued it, who is
- * recorded as the grader.
+ * Custom data: questionattemptids (int[]). The task runs as the admin who queued it (the main admin
+ * when queued by the scheduled task), who is recorded as the grader. The capability and the attempt
+ * (finished, not a preview) are checked again here, since both can change while the task waits.
  *
  * @package    tool_regradeaitextqs
  * @copyright  2026 Adam Jenkins <adam@wisecat.net>
@@ -34,13 +35,17 @@ class regrade_with_ai extends \core\task\adhoc_task {
      * Regrade each queued question attempt that is still stuck.
      */
     public function execute(): void {
-        global $DB;
+        global $DB, $USER;
+        if (!has_capability('tool/regradeaitextqs:regrade', \context_system::instance())) {
+            mtrace("User {$USER->id} may not regrade stuck AI Text questions; nothing was regraded.");
+            return;
+        }
         $data = $this->get_custom_data();
         $ids = array_map('intval', (array) ($data->questionattemptids ?? []));
         $regrader = new regrader();
         foreach ($ids as $qaid) {
             $row = $DB->get_record_sql(
-                "SELECT qa.slot, quiza.id AS quizattemptid
+                "SELECT qa.slot, quiza.id AS quizattemptid, quiza.state, quiza.preview
                    FROM {question_attempts} qa
                    JOIN {quiz_attempts} quiza ON quiza.uniqueid = qa.questionusageid
                   WHERE qa.id = :id",
@@ -50,8 +55,12 @@ class regrade_with_ai extends \core\task\adhoc_task {
                 mtrace("Question attempt $qaid no longer exists.");
                 continue;
             }
+            if ($row->state !== \mod_quiz\quiz_attempt::FINISHED || (int) $row->preview) {
+                mtrace("Question attempt $qaid is not in a finished, non-preview quiz attempt; skipped.");
+                continue;
+            }
             $attemptobj = \mod_quiz\quiz_attempt::create($row->quizattemptid);
-            $outcome = $regrader->regrade($attemptobj, (int) $row->slot, true);
+            $outcome = $regrader->regrade($attemptobj, (int) $row->slot, [result::REREAD, result::ASKAI]);
             $mark = $outcome->category === result::GRADED ? ' mark ' . format_float($outcome->mark, 2) : '';
             mtrace("Question attempt $qaid: {$outcome->category}$mark. {$outcome->reason}");
         }
