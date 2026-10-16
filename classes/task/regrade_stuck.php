@@ -26,7 +26,7 @@ use tool_regradeaitextqs\result;
  * Apply the default actions to every stuck AI Text question on the site.
  *
  * Re-reads and invalid answers are graded in this run; questions that need a new AI reply are
- * queued as one regrade_with_ai adhoc task each (not queued twice while one is waiting). Runs as
+ * queued as one regrade_with_ai adhoc task each (not queued again while any waiting task holds it). Runs as
  * the main admin, who is recorded as the grader.
  *
  * @package    tool_regradeaitextqs
@@ -53,15 +53,22 @@ class regrade_stuck extends \core\task\scheduled_task {
             return;
         }
         $regrader = new regrader();
+        $waiting = $this->waiting_question_attempt_ids();
         $attempts = [];
         $counts = [];
         foreach ((new finder())->find() as $qaid => $item) {
             $attemptobj = $attempts[$item->quizattemptid] ??= quiz_attempt::create($item->quizattemptid);
             $plan = $regrader->plan($attemptobj->get_question_attempt($item->slot), $actions);
             if ($plan->category === result::ASKAI) {
-                $task = new regrade_with_ai();
-                $task->set_custom_data(['questionattemptids' => [(int) $qaid]]);
-                $outcome = \core\task\manager::queue_adhoc_task($task, true) ? 'queued' : 'already queued';
+                if (isset($waiting[(int) $qaid])) {
+                    $outcome = 'already queued';
+                } else {
+                    $task = new regrade_with_ai();
+                    $task->set_custom_data(['questionattemptids' => [(int) $qaid]]);
+                    // The return value cannot tell a new task from an existing one: 5.3 returns the existing task's id.
+                    \core\task\manager::queue_adhoc_task($task, true);
+                    $outcome = 'queued';
+                }
             } else if (in_array($plan->category, [result::REREAD, result::INVALID], true)) {
                 $outcome = $regrader->regrade($attemptobj, (int) $item->slot, $actions)->category;
                 // A graded question changes the attempt; load it again for its next slot.
@@ -76,5 +83,20 @@ class regrade_stuck extends \core\task\scheduled_task {
         foreach ($counts as $outcome => $count) {
             mtrace("$outcome: $count");
         }
+    }
+
+    /**
+     * The question attempt ids held by regrade_with_ai tasks that have not run yet (queued here or from the review page).
+     *
+     * @return array question attempt id => true.
+     */
+    protected function waiting_question_attempt_ids(): array {
+        $ids = [];
+        foreach (\core\task\manager::get_adhoc_tasks('\\' . regrade_with_ai::class) as $task) {
+            foreach ((array) ($task->get_custom_data()->questionattemptids ?? []) as $qaid) {
+                $ids[(int) $qaid] = true;
+            }
+        }
+        return $ids;
     }
 }
